@@ -9,6 +9,8 @@
 ** This file is part of the core classes of the KiWi Editor (IDE)
 **
 ** Author: creativepulse.gr
+**          https://github.com/codeyash
+**          https://github.com/fro0m
 ** License : Apache License 2.0
 **
 ** All rights are reserved.
