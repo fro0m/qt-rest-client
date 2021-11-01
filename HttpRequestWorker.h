@@ -1,7 +1,7 @@
 /****************************************************************************
 **
 ** Copyright (C) 2007-2015 Speedovation
-** Copyright (C) 2015 creativepulse.gr 
+** Copyright (C) 2015 creativepulse.gr
 ** Contact: Speedovation Lab (info@speedovation.com)
 **
 ** KineticWing IDE CrashHandler
@@ -16,75 +16,101 @@
 ** All rights are reserved.
 */
 
-
-
 #ifndef HTTPREQUESTWORKER_H
 #define HTTPREQUESTWORKER_H
 
+#include <QMap>
+#include <QNetworkReply>
 #include <QObject>
 #include <QString>
-#include <QMap>
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
 
+class QNetworkAccessManager;
 
-enum HttpRequestVarLayout {NOT_SET, ADDRESS, URL_ENCODED, MULTIPART};
+namespace Literals
+{
+static const QString getMethod = QStringLiteral("GET");
+static const QString postMethod = QStringLiteral("POST");
+static const QString putMethod = QStringLiteral("PUT");
+static const QString headMethod = QStringLiteral("HEAD");
+static const QString deleteMethod = QStringLiteral("DELETE");
+}
 
+enum HttpRequestVarLayout
+{
+    NOT_SET,
+    ADDRESS,
+    URL_ENCODED,
+    MULTIPART
+};
 
-class HttpRequestInputFileElement {
-
+class HttpRequestInputFilePathElement
+{
 public:
     QString variableName;
     QString localFilename;
     QString requestFilename;
-    QString mimeType;
-
+    QByteArray mimeType;
 };
 
+class HttpRequestInputFileDataElement
+{
+public:
+    QString variableName;
+    QByteArray localFileData;
+    QString requestFilename;
+    QByteArray mimeType;
+};
 
-class HttpRequestInput {
-
+class HttpRequestInput
+{
 public:
     QString urlStr;
+    // qint32 port = -1;
     QString httpMethod;
     HttpRequestVarLayout varLayout;
-    QMap<QString, QString> vars;
+    QMap<QString, QByteArray> vars;
     QMap<QByteArray, QByteArray> headers;
-    QList<HttpRequestInputFileElement> files;
+    QList<HttpRequestInputFilePathElement> files;
+    QList<HttpRequestInputFileDataElement> filesData;
 
     HttpRequestInput();
-    HttpRequestInput(const QString& v_urlStr, const QString& v_httpMethod);
+    HttpRequestInput(const QString& v_urlStr, const QString& v_httpMethod = Literals::getMethod);
     void initialize();
-    void addVar(const QString& key, const QString& value);
+    void addVar(const QString& key, const QByteArray& value);
     void addHeader(const QByteArray& header, const QByteArray& value);
-    void addFile(const QString& variableName, const QString& localFilename, const QString& requestFilename, const QString& mimeType);
-
+    void addFile(const QString& variableName, const QString& localFilename,
+                 const QString& requestFilename, const QByteArray& mimeType);
+    void addFile(const QString& variableName, const QByteArray& localFileData,
+                 const QString& requestFilename, const QByteArray& mimeType);
 };
 
-
-class HttpRequestWorker : public QObject {
+class HttpRequestWorker : public QObject
+{
     Q_OBJECT
 
 public:
-    explicit HttpRequestWorker(QObject *parent = 0);
+    explicit HttpRequestWorker(QObject* parent = nullptr);
     ~HttpRequestWorker();
     QByteArray response;
     QNetworkReply::NetworkError errorType;
     QString errorStr;
+    int statusCode; // HTTP status code
 
+    QByteArray httpAttributeEncode(const QString& attribute_name, const QString& input);
+    QNetworkReply::NetworkError execute(HttpRequestInput* input);
 
-    QString httpAttributeEncode(QString attribute_name, QString input);
-    void execute(HttpRequestInput *input);
-
+    void setReadResponseOnError(bool t_readResponseOnError);
+    void setReadErrorString(bool readErrorString);
 signals:
-    void executionFinished(HttpRequestWorker *worker);
+    void executionFinished(HttpRequestWorker* worker);
 
 private:
-    QNetworkAccessManager *manager;
+    QNetworkAccessManager* manager;
+    bool m_readResponseOnError = false;
+    bool m_readErrorString = false;
 
 private slots:
-    void managerFinished(QNetworkReply *reply);
-
+    void managerFinished(QNetworkReply* reply);
 };
 
 #endif // HTTPREQUESTWORKER_H
