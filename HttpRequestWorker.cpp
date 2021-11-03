@@ -21,28 +21,15 @@
 #include <QBuffer>
 #include <QDateTime>
 #include <QFileInfo>
+#include <QJsonDocument>
 #include <QNetworkAccessManager>
 #include <QRandomGenerator>
 #include <QUrl>
 
-HttpRequestInput::HttpRequestInput()
-{
-    initialize();
-}
-
 HttpRequestInput::HttpRequestInput(const QString& v_urlStr, const QString& v_httpMethod)
-{
-    initialize();
-    urlStr = v_urlStr;
-    httpMethod = v_httpMethod;
-}
+    : urlStr(v_urlStr), httpMethod(v_httpMethod), varLayout(NOT_SET)
 
-void HttpRequestInput::initialize()
-{
-    varLayout = NOT_SET;
-    urlStr = "";
-    httpMethod = Literals::getMethod;
-}
+{}
 
 void HttpRequestInput::addVar(const QString& key, const QByteArray& value)
 {
@@ -163,7 +150,8 @@ QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
     }
     else if (input->varLayout == NOT_SET)
     {
-        input->varLayout = input->httpMethod == Literals::getMethod || input->httpMethod == Literals::headMethod
+        input->varLayout = input->httpMethod == Literals::getMethod ||
+                                   input->httpMethod == Literals::headMethod
                                ? ADDRESS
                                : URL_ENCODED;
     }
@@ -199,7 +187,7 @@ QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
             }
         }
     }
-    else
+    else if (input->varLayout == MULTIPART)
     {
         // variable layout is MULTIPART
 
@@ -240,7 +228,7 @@ QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
         // add files from paths
         for (QList<HttpRequestInputFilePathElement>::iterator fileInfo =
                  input->files.begin();
-             fileInfo != input->files.end(); fileInfo++)
+             fileInfo != input->files.end(); ++fileInfo)
         {
             QFileInfo fi(fileInfo->localFilename);
 
@@ -309,7 +297,7 @@ QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
         // add files from files data
         for (QList<HttpRequestInputFileDataElement>::iterator fileInfo =
                  input->filesData.begin();
-             fileInfo != input->filesData.end(); fileInfo++)
+             fileInfo != input->filesData.end(); ++fileInfo)
         {
             // ensure necessary variables are available
             if (fileInfo->localFileData.isEmpty() || fileInfo->variableName == NULL ||
@@ -365,6 +353,18 @@ QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
         requestContent.append(boundary);
         requestContent.append(boundaryDelimiter);
     }
+    else
+    {
+        QVariantMap vmap;
+        QMapIterator<QString, QByteArray> it{input->vars};
+        while (it.hasNext())
+        {
+            it.next();
+            vmap[it.key()] = it.value();
+        }
+        requestContent.append(
+            QJsonDocument::fromVariant(vmap).toJson(QJsonDocument::Compact));
+    }
 
     // prepare connection
     QUrl url;
@@ -377,6 +377,10 @@ QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
     {
         request.setHeader(QNetworkRequest::ContentTypeHeader,
                           "application/x-www-form-urlencoded");
+    }
+    else if (input->varLayout == JSON)
+    {
+        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     }
     else if (input->varLayout == MULTIPART)
     {
