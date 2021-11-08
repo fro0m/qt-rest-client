@@ -33,13 +33,14 @@ static const QString postMethod = QStringLiteral("POST");
 static const QString putMethod = QStringLiteral("PUT");
 static const QString headMethod = QStringLiteral("HEAD");
 static const QString deleteMethod = QStringLiteral("DELETE");
-}
+} // namespace Literals
 
 enum HttpRequestVarLayout
 {
     NOT_SET,
     ADDRESS,
     URL_ENCODED,
+    JSON,
     MULTIPART
 };
 
@@ -73,9 +74,9 @@ public:
     QList<HttpRequestInputFilePathElement> files;
     QList<HttpRequestInputFileDataElement> filesData;
 
-    HttpRequestInput();
-    HttpRequestInput(const QString& v_urlStr, const QString& v_httpMethod = Literals::getMethod);
-    void initialize();
+    explicit HttpRequestInput(const QString& v_urlStr = "",
+                              const QString& v_httpMethod = Literals::getMethod);
+
     void addVar(const QString& key, const QByteArray& value);
     void addHeader(const QByteArray& header, const QByteArray& value);
     void addFile(const QString& variableName, const QString& localFilename,
