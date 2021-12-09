@@ -21,7 +21,9 @@
 #include <QBuffer>
 #include <QDateTime>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QRandomGenerator>
 #include <QUrl>
@@ -353,17 +355,24 @@ QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
         requestContent.append(boundary);
         requestContent.append(boundaryDelimiter);
     }
-    else
+    else // JSON case
     {
-        QVariantMap vmap;
+        QJsonObject requestContentObj;
         QMapIterator<QString, QByteArray> it{input->vars};
         while (it.hasNext())
         {
             it.next();
-            vmap[it.key()] = it.value();
+            QJsonDocument currentDoc = QJsonDocument::fromJson(it.value());
+            if (currentDoc.isObject())
+                requestContentObj[it.key()] = currentDoc.object();
+            else if (currentDoc.isArray())
+                requestContentObj[it.key()] = currentDoc.array();
+            else
+                requestContentObj[it.key()] = QString(it.value());
         }
-        requestContent.append(
-            QJsonDocument::fromVariant(vmap).toJson(QJsonDocument::Compact));
+        QJsonDocument requestContentDoc;
+        requestContentDoc.setObject(requestContentObj);
+        requestContent.append(requestContentDoc.toJson(QJsonDocument::Compact));
     }
 
     // prepare connection
@@ -400,6 +409,7 @@ QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
     }
     else if (input->httpMethod == Literals::postMethod)
     {
+        qWarning() << requestContent;
         reply = manager->post(request, requestContent);
     }
     else if (input->httpMethod == Literals::putMethod)
