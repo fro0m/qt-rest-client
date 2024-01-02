@@ -194,7 +194,7 @@ QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
         // variable layout is MULTIPART
 
         boundary = "__-----------------------" +
-                   QString::number(QDateTime::currentDateTime().toTime_t()).toLatin1() +
+                   QString::number(QDateTime::currentSecsSinceEpoch()).toLatin1() +
                    QString::number(QRandomGenerator::system()->generate()).toLatin1();
         QByteArray boundaryDelimiter = "--";
         QByteArray newLine = "\r\n";
@@ -236,9 +236,9 @@ QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
 
             // ensure necessary variables are available
             if (
-                /*fileInfo->localFilename == NULL ||*/ fileInfo->localFilename
+                 fileInfo->localFilename
                     .isEmpty() ||
-                fileInfo->variableName == NULL || fileInfo->variableName.isEmpty() ||
+                fileInfo->variableName.isEmpty() ||
                 !fi.exists() || !fi.isFile() || !fi.isReadable())
             {
                 // silent abort for the current file
@@ -302,7 +302,7 @@ QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
              fileInfo != input->filesData.end(); ++fileInfo)
         {
             // ensure necessary variables are available
-            if (fileInfo->localFileData.isEmpty() || fileInfo->variableName == NULL ||
+            if (fileInfo->localFileData.isEmpty() ||
                 fileInfo->variableName.isEmpty())
             {
                 // silent abort for the current file
@@ -311,13 +311,11 @@ QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
             }
 
             // ensure filename for the request
-            if (fileInfo->requestFilename == NULL)
-            {
                 if (fileInfo->requestFilename.isEmpty())
                 {
                     fileInfo->requestFilename = "file";
                 }
-            }
+
 
             // add boundary
             requestContent.append(boundaryDelimiter);
