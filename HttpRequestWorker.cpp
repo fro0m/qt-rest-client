@@ -235,10 +235,7 @@ QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
             QFileInfo fi(fileInfo->localFilename);
 
             // ensure necessary variables are available
-            if (
-                 fileInfo->localFilename
-                    .isEmpty() ||
-                fileInfo->variableName.isEmpty() ||
+            if (fileInfo->localFilename.isEmpty() || fileInfo->variableName.isEmpty() ||
                 !fi.exists() || !fi.isFile() || !fi.isReadable())
             {
                 // silent abort for the current file
@@ -302,8 +299,7 @@ QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
              fileInfo != input->filesData.end(); ++fileInfo)
         {
             // ensure necessary variables are available
-            if (fileInfo->localFileData.isEmpty() ||
-                fileInfo->variableName.isEmpty())
+            if (fileInfo->localFileData.isEmpty() || fileInfo->variableName.isEmpty())
             {
                 // silent abort for the current file
                 qDebug() << "problem with file in request";
@@ -311,11 +307,10 @@ QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
             }
 
             // ensure filename for the request
-                if (fileInfo->requestFilename.isEmpty())
-                {
-                    fileInfo->requestFilename = "file";
-                }
-
+            if (fileInfo->requestFilename.isEmpty())
+            {
+                fileInfo->requestFilename = "file";
+            }
 
             // add boundary
             requestContent.append(boundaryDelimiter);
@@ -407,7 +402,6 @@ QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
     }
     else if (input->httpMethod == Literals::postMethod)
     {
-        qWarning() << requestContent;
         reply = manager->post(request, requestContent);
     }
     else if (input->httpMethod == Literals::putMethod)
