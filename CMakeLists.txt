@@ -1,16 +1,36 @@
-# Qt REST Client CMakeLists.txt
+cmake_minimum_required(VERSION 3.15)
+project(qt-rest-client LANGUAGES CXX)
 
-add_library(qt_rest_client OBJECT)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-target_sources(qt_rest_client PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
+find_package(Qt6 REQUIRED COMPONENTS Core Network)
+
+add_library(qt-rest-client STATIC
+    HttpRequestWorker.cpp
+    HttpRequestWorker.h
 )
 
-target_include_directories(qt_rest_client PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+target_link_libraries(qt-rest-client
+    PUBLIC
+        Qt6::Core
+        Qt6::Network
 )
 
-target_link_libraries(qt_rest_client
-    PRIVATE
-    Qt6::Core
-    Qt6::Network)
+target_include_directories(qt-rest-client
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+        $<INSTALL_INTERFACE:include>
+)
+
+install(TARGETS qt-rest-client
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+    RUNTIME DESTINATION bin
+)
+
+install(FILES HttpRequestWorker.h
+    DESTINATION include
+)
