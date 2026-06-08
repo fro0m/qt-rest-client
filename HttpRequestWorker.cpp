@@ -2,16 +2,18 @@
 **
 ** Copyright (C) 2007-2015 Speedovation
 ** Copyright (C) 2015 creativepulse.gr
-** Contact: Speedovation Lab (info@speedovation.com)
+** Copyright (C) qt-rest-client contributors
 **
-** KineticWing IDE CrashHandler
-** http:// kineticwing.com
-** This file is part of the core classes of the KiWi Editor (IDE)
+** A lightweight REST/HTTP client built on QNetworkAccessManager.
 **
-** Author: creativepulse.gr
-**          https://github.com/codeyash
-**          https://github.com/fro0m
-** License : Apache License 2.0
+** Authors:
+**   creativepulse.gr
+**   https://github.com/codeyash
+**   https://github.com/fro0m
+**
+** Licensed under the Apache License, Version 2.0 (the "License");
+** you may not use this file except in compliance with the License.
+** See the LICENSE file for details.
 **
 ** All rights are reserved.
 */
@@ -26,12 +28,13 @@
 #include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QRandomGenerator>
+#include <QTimer>
 #include <QUrl>
 
-HttpRequestInput::HttpRequestInput(const QString& v_urlStr, const QString& v_httpMethod)
-    : urlStr(v_urlStr), httpMethod(v_httpMethod), varLayout(NOT_SET)
-
-{}
+HttpRequestInput::HttpRequestInput(const QString& url, HttpMethod method)
+    : urlStr(url), httpMethod(method)
+{
+}
 
 void HttpRequestInput::addVar(const QString& key, const QByteArray& value)
 {
@@ -66,368 +69,394 @@ void HttpRequestInput::addFile(const QString& variableName,
     filesData.append(file);
 }
 
-HttpRequestWorker::HttpRequestWorker(QObject* parent) : QObject(parent), manager(NULL)
+HttpRequestWorker::HttpRequestWorker(QObject* parent)
+    : QObject(parent), manager(new QNetworkAccessManager(this))
 {
-    manager = new QNetworkAccessManager(this);
-    connect(manager, SIGNAL(finished(QNetworkReply*)), this,
-            SLOT(managerFinished(QNetworkReply*)));
+    connect(manager, &QNetworkAccessManager::finished,
+            this, &HttpRequestWorker::managerFinished);
 }
 
-HttpRequestWorker::~HttpRequestWorker()
-{}
+HttpRequestWorker::~HttpRequestWorker() = default;
 
-QByteArray HttpRequestWorker::httpAttributeEncode(const QString& attribute_name,
+QByteArray HttpRequestWorker::httpAttributeEncode(const QString& attributeName,
                                                   const QString& input)
 {
     // result structure follows RFC 5987
-    bool need_utf_encoding = false;
-    QString result = "";
-    QByteArray input_c = input.toLocal8Bit();
-    char c;
-    for (int i = 0; i < input_c.length(); i++)
+    // Iterate over UTF-16 code points; percent-encode anything that isn't a
+    // bare ASCII attr-char so the comparison ranges are never applied to a
+    // signed char (which would be UB for bytes >= 0x80).
+    bool needUtfEncoding = false;
+    QString simple;
+    simple.reserve(input.size());
+
+    for (const QChar ch : input)
     {
-        c = input_c.at(i);
-        if (c == '\\' || c == '/' || c == '\0' || c < ' ' || c > '~')
+        const ushort uc = ch.unicode();
+        if (uc == 0)
         {
-            // ignore and request utf-8 version
-            need_utf_encoding = true;
+            needUtfEncoding = true;
         }
-        else if (c == '"')
+        else if (uc < 0x20 || uc > 0x7e)
         {
-            result += "\\\"";
+            needUtfEncoding = true;
+        }
+        else if (uc == '"')
+        {
+            simple += QStringLiteral("\\\"");
         }
         else
         {
-            result += c;
+            simple += ch;
         }
     }
 
-    if (result.length() == 0)
-    {
-        need_utf_encoding = true;
-    }
+    if (simple.isEmpty())
+        needUtfEncoding = true;
 
-    if (!need_utf_encoding)
-    {
-        // return simple version
-        return QString("%1=\"%2\"").arg(attribute_name, result).toLatin1();
-    }
+    if (!needUtfEncoding)
+        return QString::fromLatin1("%1=\"%2\"").arg(attributeName, simple).toLatin1();
 
-    QString result_utf8 = "";
-    for (int i = 0; i < input_c.length(); i++)
+    // Build the percent-encoded UTF-8 form for the extended syntax.
+    const QByteArray utf8 = input.toUtf8();
+    QString encoded;
+    encoded.reserve(static_cast<int>(utf8.size() * 3));
+    for (const unsigned char b : utf8)
     {
-        c = input_c.at(i);
+        const char c = static_cast<char>(b);
         if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
         {
-            result_utf8 += c;
+            encoded += QLatin1Char(c);
         }
         else
         {
-            result_utf8 +=
-                "%" +
-                QString::number(static_cast<unsigned char>(input_c.at(i)), 16).toUpper();
+            encoded += QLatin1Char('%');
+            encoded += QString::number(b, 16).toUpper().rightJustified(2, '0');
         }
     }
 
-    // return enhanced version with UTF-8 support
-    return QString("%1=\"%2\"; %1*=utf-8''%3")
-        .arg(attribute_name, result, result_utf8)
+    return QString::fromLatin1("%1=\"%2\"; %1*=utf-8''%3")
+        .arg(attributeName, simple, encoded)
         .toLatin1();
+}
+
+void HttpRequestWorker::buildUrlEncoded(QByteArray& body, HttpRequestInput* input, bool asAddress)
+{
+    if (input->vars.isEmpty())
+        return;
+
+    body.reserve(body.size() + input->vars.size() * 16);
+    bool first = true;
+    for (auto it = input->vars.cbegin(); it != input->vars.cend(); ++it)
+    {
+        if (!first)
+            body.append('&');
+        first = false;
+
+        body.append(QUrl::toPercentEncoding(it.key()));
+        body.append('=');
+        body.append(QUrl::toPercentEncoding(it.value()));
+    }
+
+    if (asAddress)
+    {
+        input->urlStr += '?' + QString::fromLatin1(body);
+        body.clear();
+    }
+}
+
+void HttpRequestWorker::appendMultipartFile(QByteArray& body, const QByteArray& boundary,
+                                            const QString& variableName,
+                                            const QString& requestFilename,
+                                            const QByteArray& mimeType,
+                                            const QByteArray& content)
+{
+    const QByteArray boundaryDelimiter = "--";
+    const QByteArray newLine = "\r\n";
+
+    body.append(boundaryDelimiter);
+    body.append(boundary);
+    body.append(newLine);
+
+    body.append(QString("Content-Disposition: form-data; %1; %2")
+                    .arg(QString::fromLatin1(httpAttributeEncode("name", variableName)),
+                         QString::fromLatin1(httpAttributeEncode("filename", requestFilename)))
+                    .toLatin1());
+    body.append(newLine);
+
+    if (!mimeType.isNull() && !mimeType.isEmpty())
+    {
+        body.append("Content-Type: ");
+        body.append(mimeType);
+        body.append(newLine);
+    }
+
+    body.append("Content-Transfer-Encoding: binary");
+    body.append(newLine);
+    body.append(newLine);
+
+    body.append(content);
+    body.append(newLine);
+}
+
+void HttpRequestWorker::buildMultipart(QByteArray& body, const QByteArray& boundary,
+                                       HttpRequestInput* input)
+{
+    const QByteArray boundaryDelimiter = "--";
+    const QByteArray newLine = "\r\n";
+
+    // rough size hint so the body isn't reallocated on every append
+    qint64 hint = input->vars.size() * 128;
+    for (const auto& f : input->files)
+        hint += QFileInfo(f.localFilename).size();
+    for (const auto& f : input->filesData)
+        hint += f.localFileData.size();
+    if (hint > 0)
+        body.reserve(static_cast<int>(qMin(hint, qint64(INT_MAX))));
+
+    // add variables
+    for (auto it = input->vars.cbegin(); it != input->vars.cend(); ++it)
+    {
+        body.append(boundaryDelimiter);
+        body.append(boundary);
+        body.append(newLine);
+
+        //! The Content-Disposition response-header field has been proposed
+        //! as a means for the origin server to suggest a default filename
+        //! if the user requests that the content is saved to a file. This
+        //! usage is derived from the definition of Content-Disposition
+        //! in RFC 1806
+        body.append("Content-Disposition: form-data; ");
+        body.append(httpAttributeEncode("name", it.key()));
+        body.append(newLine);
+        body.append("Content-Type: text/plain");
+        body.append(newLine);
+        body.append(newLine);
+
+        body.append(it.value());
+        body.append(newLine);
+    }
+
+    // add files referenced by path
+    for (const HttpRequestInputFilePathElement& fileInfo : input->files)
+    {
+        QFileInfo fi(fileInfo.localFilename);
+
+        if (fileInfo.localFilename.isEmpty() || fileInfo.variableName.isEmpty() ||
+            !fi.exists() || !fi.isFile() || !fi.isReadable())
+        {
+            qDebug() << "problem with file in request";
+            continue;
+        }
+
+        QFile file(fileInfo.localFilename);
+        if (!file.open(QIODevice::ReadOnly))
+        {
+            qDebug() << "could not open file in request:" << fileInfo.localFilename;
+            continue;
+        }
+
+        QString requestFilename = fileInfo.requestFilename;
+        if (requestFilename.isEmpty())
+        {
+            requestFilename = fi.fileName();
+            if (requestFilename.isEmpty())
+                requestFilename = QStringLiteral("file");
+        }
+
+        appendMultipartFile(body, boundary, fileInfo.variableName, requestFilename,
+                            fileInfo.mimeType, file.readAll());
+        file.close();
+    }
+
+    // add files supplied as raw data
+    for (const HttpRequestInputFileDataElement& fileInfo : input->filesData)
+    {
+        if (fileInfo.localFileData.isEmpty() || fileInfo.variableName.isEmpty())
+        {
+            qDebug() << "problem with file data in request";
+            continue;
+        }
+
+        QString requestFilename = fileInfo.requestFilename;
+        if (requestFilename.isEmpty())
+            requestFilename = QStringLiteral("file");
+
+        appendMultipartFile(body, boundary, fileInfo.variableName, requestFilename,
+                            fileInfo.mimeType, fileInfo.localFileData);
+    }
+
+    // closing boundary
+    body.append(boundaryDelimiter);
+    body.append(boundary);
+    body.append(boundaryDelimiter);
+}
+
+void HttpRequestWorker::buildJson(QByteArray& body, HttpRequestInput* input)
+{
+    // Each variable value is parsed as JSON; if it is a valid object or
+    // array it is embedded as-is, otherwise it is stored as a JSON string.
+    // This means "123" becomes a number and "{\"a\":1}" becomes an object —
+    // callers that want literal strings for such values should pre-encode.
+    QJsonObject obj;
+    for (auto it = input->vars.cbegin(); it != input->vars.cend(); ++it)
+    {
+        const QJsonDocument doc = QJsonDocument::fromJson(it.value());
+        if (doc.isObject())
+            obj[it.key()] = doc.object();
+        else if (doc.isArray())
+            obj[it.key()] = doc.array();
+        else
+            obj[it.key()] = QString::fromUtf8(it.value());
+    }
+
+    QJsonDocument doc;
+    doc.setObject(obj);
+    body.append(doc.toJson(QJsonDocument::Compact));
+}
+
+QNetworkReply* HttpRequestWorker::dispatch(QNetworkRequest& request, const QByteArray& body,
+                                           HttpRequestInput* input)
+{
+    QNetworkReply* reply = nullptr;
+    switch (input->httpMethod)
+    {
+    case HttpMethod::Get:
+        reply = manager->get(request);
+        break;
+    case HttpMethod::Post:
+        reply = manager->post(request, body);
+        break;
+    case HttpMethod::Put:
+        reply = manager->put(request, body);
+        break;
+    case HttpMethod::Head:
+        reply = manager->head(request);
+        break;
+    case HttpMethod::Delete:
+        reply = manager->deleteResource(request);
+        break;
+    case HttpMethod::Custom:
+    {
+        // The buffer must outlive the call; parent it to the reply so it is
+        // destroyed together with the reply rather than at scope exit.
+        QBuffer* buffer = new QBuffer;
+        buffer->setData(body);
+        buffer->open(QIODevice::ReadOnly);
+        reply = manager->sendCustomRequest(request, input->customMethod, buffer);
+        if (reply)
+            buffer->setParent(reply);
+        else
+            delete buffer;
+        break;
+    }
+    }
+
+    Q_ASSERT_X(reply, "HttpRequestWorker::dispatch",
+               "QNetworkAccessManager returned a null reply");
+    return reply;
 }
 
 QNetworkReply::NetworkError HttpRequestWorker::execute(HttpRequestInput* input)
 {
-    // reset variables
+    Q_ASSERT_X(input, "HttpRequestWorker::execute", "input must not be null");
 
-    QByteArray requestContent = "";
-    response = "";
+    // reset result fields
+    response.clear();
     errorType = QNetworkReply::NoError;
-    errorStr = "";
+    errorStr.clear();
+    statusCode = 0;
 
     // decide on the variable layout
-
-    if (input->files.length() > 0 || input->filesData.length() > 0)
+    if (input->files.size() > 0 || input->filesData.size() > 0)
     {
-        input->varLayout = MULTIPART;
+        input->varLayout = HttpRequestVarLayout::Multipart;
     }
-    else if (input->varLayout == NOT_SET)
+    else if (input->varLayout == HttpRequestVarLayout::NotSet)
     {
-        input->varLayout = input->httpMethod == Literals::getMethod ||
-                                   input->httpMethod == Literals::headMethod
-                               ? ADDRESS
-                               : URL_ENCODED;
+        input->varLayout = (input->httpMethod == HttpMethod::Get ||
+                            input->httpMethod == HttpMethod::Head)
+                               ? HttpRequestVarLayout::Address
+                               : HttpRequestVarLayout::UrlEncoded;
     }
 
-    // prepare request content
+    // build the request body
+    QByteArray body;
+    QByteArray boundary;
 
-    QByteArray boundary = "";
-
-    if (input->varLayout == ADDRESS || input->varLayout == URL_ENCODED)
+    switch (input->varLayout)
     {
-        // variable layout is ADDRESS or URL_ENCODED
-
-        if (input->vars.count() > 0)
-        {
-            bool first = true;
-            foreach (QString key, input->vars.keys())
-            {
-                if (!first)
-                {
-                    requestContent.append("&");
-                }
-                first = false;
-
-                requestContent.append(QUrl::toPercentEncoding(key));
-                requestContent.append("=");
-                requestContent.append(QUrl::toPercentEncoding(input->vars.value(key)));
-            }
-
-            if (input->varLayout == ADDRESS)
-            {
-                input->urlStr += "?" + requestContent;
-                requestContent = "";
-            }
-        }
-    }
-    else if (input->varLayout == MULTIPART)
+    case HttpRequestVarLayout::Address:
+        buildUrlEncoded(body, input, /*asAddress=*/true);
+        break;
+    case HttpRequestVarLayout::UrlEncoded:
+        buildUrlEncoded(body, input, /*asAddress=*/false);
+        break;
+    case HttpRequestVarLayout::Multipart:
     {
-        // variable layout is MULTIPART
-
-        boundary = "__-----------------------" +
+        // random-ish boundary; the leading -- is part of the delimiter, the
+        // extra dashes just make it unlikely to collide with body content
+        boundary = "-------------------------" +
                    QString::number(QDateTime::currentSecsSinceEpoch()).toLatin1() +
                    QString::number(QRandomGenerator::system()->generate()).toLatin1();
-        QByteArray boundaryDelimiter = "--";
-        QByteArray newLine = "\r\n";
-
-        // add variables
-        foreach (QString key, input->vars.keys())
-        {
-            // add boundary
-            requestContent.append(boundaryDelimiter);
-            requestContent.append(boundary);
-            requestContent.append(newLine);
-
-            // add header
-            //! The Content-Disposition response-header field has been proposed
-            //! as a means for the origin server to suggest a default filename
-            //! if the user requests that the content is saved to a file. This
-            //! usage is derived from the definition of Content-Disposition
-            //! in RFC 1806
-            requestContent.append("Content-Disposition: form-data; ");
-            requestContent.append(httpAttributeEncode("name", key));
-            requestContent.append(newLine);
-            requestContent.append("Content-Type: text/plain");
-            requestContent.append(newLine);
-
-            // add header to body splitter
-            requestContent.append(newLine);
-
-            // add variable content
-            requestContent.append(input->vars.value(key));
-            requestContent.append(newLine);
-        }
-
-        // add files from paths
-        for (QList<HttpRequestInputFilePathElement>::iterator fileInfo =
-                 input->files.begin();
-             fileInfo != input->files.end(); ++fileInfo)
-        {
-            QFileInfo fi(fileInfo->localFilename);
-
-            // ensure necessary variables are available
-            if (fileInfo->localFilename.isEmpty() || fileInfo->variableName.isEmpty() ||
-                !fi.exists() || !fi.isFile() || !fi.isReadable())
-            {
-                // silent abort for the current file
-                qDebug() << "problem with file in request";
-                continue;
-            }
-
-            QFile file(fileInfo->localFilename);
-            if (!file.open(QIODevice::ReadOnly))
-            {
-                // silent abort for the current file
-                continue;
-            }
-
-            // ensure filename for the request
-            if (/*fileInfo->requestFilename == NULL ||*/ fileInfo->requestFilename
-                    .isEmpty())
-            {
-                fileInfo->requestFilename = fi.fileName();
-                if (fileInfo->requestFilename.isEmpty())
-                {
-                    fileInfo->requestFilename = "file";
-                }
-            }
-
-            // add boundary
-            requestContent.append(boundaryDelimiter);
-            requestContent.append(boundary);
-            requestContent.append(newLine);
-
-            // add header
-            requestContent.append(
-                QString("Content-Disposition: form-data; %1; %2")
-                    .arg(httpAttributeEncode("name", fileInfo->variableName),
-                         httpAttributeEncode("filename", fileInfo->requestFilename))
-                    .toLatin1());
-            requestContent.append(newLine);
-
-            if (!(fileInfo->mimeType.isNull() || fileInfo->mimeType.isEmpty()))
-            {
-                requestContent.append("Content-Type: ");
-                requestContent.append(fileInfo->mimeType);
-                requestContent.append(newLine);
-            }
-
-            requestContent.append("Content-Transfer-Encoding: binary");
-            requestContent.append(newLine);
-
-            // add header to body splitter
-            requestContent.append(newLine);
-
-            // add file content
-            requestContent.append(file.readAll());
-            requestContent.append(newLine);
-
-            file.close();
-        }
-        // add files from files data
-        for (QList<HttpRequestInputFileDataElement>::iterator fileInfo =
-                 input->filesData.begin();
-             fileInfo != input->filesData.end(); ++fileInfo)
-        {
-            // ensure necessary variables are available
-            if (fileInfo->localFileData.isEmpty() || fileInfo->variableName.isEmpty())
-            {
-                // silent abort for the current file
-                qDebug() << "problem with file in request";
-                continue;
-            }
-
-            // ensure filename for the request
-            if (fileInfo->requestFilename.isEmpty())
-            {
-                fileInfo->requestFilename = "file";
-            }
-
-            // add boundary
-            requestContent.append(boundaryDelimiter);
-            requestContent.append(boundary);
-            requestContent.append(newLine);
-
-            // add header
-            requestContent.append(
-                QString("Content-Disposition: form-data; %1; %2")
-                    .arg(httpAttributeEncode("name", fileInfo->variableName),
-                         httpAttributeEncode("filename", fileInfo->requestFilename))
-                    .toLatin1());
-            requestContent.append(newLine);
-
-            if (!(fileInfo->mimeType.isNull() || fileInfo->mimeType.isEmpty()))
-            {
-                requestContent.append("Content-Type: ");
-                requestContent.append(fileInfo->mimeType);
-                requestContent.append(newLine);
-            }
-
-            requestContent.append("Content-Transfer-Encoding: binary");
-            requestContent.append(newLine);
-
-            // add header to body splitter
-            requestContent.append(newLine);
-
-            // add file content
-            requestContent.append(fileInfo->localFileData);
-            requestContent.append(newLine);
-        }
-
-        // add end of body
-        requestContent.append(boundaryDelimiter);
-        requestContent.append(boundary);
-        requestContent.append(boundaryDelimiter);
+        buildMultipart(body, boundary, input);
+        break;
     }
-    else // JSON case
-    {
-        QJsonObject requestContentObj;
-        QMapIterator<QString, QByteArray> it{input->vars};
-        while (it.hasNext())
-        {
-            it.next();
-            QJsonDocument currentDoc = QJsonDocument::fromJson(it.value());
-            if (currentDoc.isObject())
-                requestContentObj[it.key()] = currentDoc.object();
-            else if (currentDoc.isArray())
-                requestContentObj[it.key()] = currentDoc.array();
-            else
-                requestContentObj[it.key()] = QString(it.value());
-        }
-        QJsonDocument requestContentDoc;
-        requestContentDoc.setObject(requestContentObj);
-        requestContent.append(requestContentDoc.toJson(QJsonDocument::Compact));
+    case HttpRequestVarLayout::Json:
+        buildJson(body, input);
+        break;
+    case HttpRequestVarLayout::NotSet:
+        break;
     }
 
-    // prepare connection
-    QUrl url;
-    url.setUrl(input->urlStr);
-
-    QNetworkRequest request = QNetworkRequest(url);
-    request.setHeader(QNetworkRequest::UserAgentHeader, "Frumkin K. E. REST Client");
-
-    if (input->varLayout == URL_ENCODED)
+    // prepare the connection
+    const QUrl url(input->urlStr);
+    if (!url.isValid())
     {
+        errorType = QNetworkReply::UnknownNetworkError;
+        errorStr = QStringLiteral("Invalid URL: ") + input->urlStr;
+        QTimer::singleShot(0, this, [this] { emit executionFinished(this); });
+        return errorType;
+    }
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("qt-rest-client"));
+
+    switch (input->varLayout)
+    {
+    case HttpRequestVarLayout::UrlEncoded:
         request.setHeader(QNetworkRequest::ContentTypeHeader,
-                          "application/x-www-form-urlencoded");
-    }
-    else if (input->varLayout == JSON)
-    {
-        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    }
-    else if (input->varLayout == MULTIPART)
-    {
+                          QStringLiteral("application/x-www-form-urlencoded"));
+        break;
+    case HttpRequestVarLayout::Json:
+        request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+        break;
+    case HttpRequestVarLayout::Multipart:
         request.setHeader(QNetworkRequest::ContentTypeHeader,
                           "multipart/form-data; boundary=" + boundary);
+        break;
+    default:
+        break;
     }
 
-    //! add custom headers
-    foreach (const QByteArray& key, input->headers.keys())
+    // apply caller-supplied headers
+    for (auto it = input->headers.cbegin(); it != input->headers.cend(); ++it)
+        request.setRawHeader(it.key(), it.value());
+
+    QNetworkReply* reply = dispatch(request, body, input);
+    if (!reply)
     {
-        request.setRawHeader(key, input->headers[key]);
-    }
-    QNetworkReply* reply;
-    if (input->httpMethod == Literals::getMethod)
-    {
-        reply = manager->get(request);
-    }
-    else if (input->httpMethod == Literals::postMethod)
-    {
-        reply = manager->post(request, requestContent);
-    }
-    else if (input->httpMethod == Literals::putMethod)
-    {
-        reply = manager->put(request, requestContent);
-    }
-    else if (input->httpMethod == Literals::headMethod)
-    {
-        reply = manager->head(request);
-    }
-    else if (input->httpMethod == Literals::deleteMethod)
-    {
-        reply = manager->deleteResource(request);
-    }
-    else
-    {
-        QBuffer buff(&requestContent);
-        reply = manager->sendCustomRequest(request, input->httpMethod.toLatin1(), &buff);
+        errorType = QNetworkReply::UnknownNetworkError;
+        errorStr = QStringLiteral("Could not start the request");
+        emit executionFinished(this);
+        return errorType;
     }
 
     return reply->error();
 }
 
-void HttpRequestWorker::setReadResponseOnError(bool t_readResponseOnError)
+void HttpRequestWorker::setReadResponseOnError(bool readResponseOnError)
 {
-    m_readResponseOnError = t_readResponseOnError;
+    m_readResponseOnError = readResponseOnError;
 }
 
 void HttpRequestWorker::setReadErrorString(bool readErrorString)
@@ -437,16 +466,20 @@ void HttpRequestWorker::setReadErrorString(bool readErrorString)
 
 void HttpRequestWorker::managerFinished(QNetworkReply* reply)
 {
+    Q_ASSERT_X(reply, "HttpRequestWorker::managerFinished", "reply must not be null");
+    if (!reply)
+    {
+        emit executionFinished(this);
+        return;
+    }
+
     statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     errorType = reply->error();
     if (errorType == QNetworkReply::NoError || m_readResponseOnError)
-    {
         response = reply->readAll();
-    }
     if (m_readErrorString)
-    {
         errorStr = reply->errorString();
-    }
+
     reply->deleteLater();
     emit executionFinished(this);
 }
