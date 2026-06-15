@@ -3,44 +3,31 @@
 #include "HttpRequestWorker.h"
 
 #include <QObject>
-#include <QStringList>
 #include <QSignalSpy>
-#include <QStandardPaths>
+#include <QStringList>
 
 /**
- * Тест подсистемы Core::ServiceManager
+ * Functional smoke tests for HttpRequestWorker.
  *
- * Чек-лист:
- * - выдача сигнала о создании очередного сервиса;
- * - выдачи сигнала о завершении создания сервисов;
- * - выборка заведомо созданного сервиса;
- * - выборка заведомо несозданного сервиса;
- * - освобождение сервисов.
+ * Hits the public postman-echo.com echo endpoint, so the suite requires
+ * network access and is not strictly hermetic.
  */
 class RestClientTest : public QObject
 {
     Q_OBJECT
 public:
-
     RestClientTest();
 
 private slots:
-    /**
-     * Инициализация теста:
-     * - создание сервисов,
-     * - подключение сигналов,
-     * - повысылка сигнала creationCompleted().
-     */
+    /** Runs once before the first test. */
     void initTestCase();
 
+    /** Sends a single GET and checks for HTTP 200. */
     void testSingleThreadWork();
+
+    /** Fires several requests concurrently and checks each returns 200. */
     void testMultithreadWork();
 
-    /**
-     * Деинициализация:
-     * - проверка сигналов created();
-     * - освобождение менеджера сервисов.
-     * - проверка фактического удаления сервисов.
-     */
+    /** Runs once after the last test. */
     void cleanupTestCase();
 };

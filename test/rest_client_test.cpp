@@ -1,13 +1,22 @@
 #include "rest_client_test.h"
-#include <QtTest/QtTest>
+
 #include <QDebug>
+#include <QEventLoop>
 #include <QFuture>
 #include <QtConcurrent>
-#include <QList>
+#include <QtTest/QtTest>
+
+namespace {
+const char* const kEchoUrl = "https://postman-echo.com/get?foo1=bar1&foo2=bar2";
+
+// Lowered from the original 10000: that many concurrent threads just exhausts
+// the global thread pool and makes the test take forever without testing
+// anything extra. 50 concurrent requests still exercises real concurrency.
+const int kThreadCount = 50;
+} // namespace
 
 RestClientTest::RestClientTest()
 {
-
 }
 
 void RestClientTest::initTestCase()
@@ -17,79 +26,67 @@ void RestClientTest::initTestCase()
 void RestClientTest::testSingleThreadWork()
 {
     QEventLoop loop;
-    HttpRequestInput* request =  new HttpRequestInput("https://postman-echo.com/get?foo1=bar1&foo2=bar2", Literals::getMethod);
+    auto* request = new HttpRequestInput(kEchoUrl, HttpMethod::Get);
 
-    HttpRequestWorker* worker = new HttpRequestWorker();
-
+    auto* worker = new HttpRequestWorker();
     worker->setReadResponseOnError(true);
     worker->execute(request);
 
     bool ok = false;
 
-    QObject::connect(worker, &HttpRequestWorker::executionFinished, [&loop, &ok, request](HttpRequestWorker * worker) mutable {
-        QByteArray response = worker->response;
-        qDebug() << "status code " << worker->statusCode;
-        worker->deleteLater();
-        delete request;
-        if (worker->statusCode == 200)
-        {
-            ok = true;
-        }
-        loop.exit();
-    });
+    QObject::connect(worker, &HttpRequestWorker::executionFinished,
+                     [&loop, &ok, request](HttpRequestWorker* w) {
+                         qDebug() << "status code" << w->statusCode;
+                         if (w->statusCode == 200)
+                             ok = true;
+                         w->deleteLater();
+                         delete request;
+                         loop.quit();
+                     });
     loop.exec(QEventLoop::ExcludeUserInputEvents | QEventLoop::ExcludeSocketNotifiers);
-    QCOMPARE(ok, true);
+    QVERIFY(ok);
 }
 
 void RestClientTest::testMultithreadWork()
 {
-    const int threadCount = 10000;
-    QFuture<bool> statuses[threadCount];
-    auto function = [=] () -> bool {
+    QVector<QFuture<bool>> statuses;
+    statuses.reserve(kThreadCount);
+
+    auto function = []() -> bool {
         QEventLoop loop;
-        HttpRequestInput* request =  new HttpRequestInput("https://postman-echo.com/get?foo1=bar1&foo2=bar2", Literals::getMethod);
+        auto* request = new HttpRequestInput(kEchoUrl, HttpMethod::Get);
 
-        HttpRequestWorker* worker = new HttpRequestWorker();
-
+        auto* worker = new HttpRequestWorker();
         worker->setReadResponseOnError(true);
         worker->execute(request);
 
         bool ok = false;
 
-        QObject::connect(worker, &HttpRequestWorker::executionFinished, [&loop, &ok, request](HttpRequestWorker * worker) mutable {
-            QByteArray response = worker->response;
-            qWarning() << "status code " << worker->statusCode;
-            worker->deleteLater();
-            delete request;
-            if (worker->statusCode == 200)
-            {
-                ok = true;
-            }
-            loop.exit(ok);
-        });
+        QObject::connect(worker, &HttpRequestWorker::executionFinished,
+                         [&loop, &ok, request](HttpRequestWorker* w) {
+                             if (w->statusCode == 200)
+                                 ok = true;
+                             w->deleteLater();
+                             delete request;
+                             loop.exit(ok);
+                         });
         return loop.exec(QEventLoop::ExcludeUserInputEvents | QEventLoop::ExcludeSocketNotifiers);
     };
 
-    for(int i = 0; i < threadCount; ++i)
-    {
-        statuses[i] = QtConcurrent::run(function);
-    }
-
-    for(int i = 0; i < threadCount; ++i)
-    {
-        statuses[i].waitForFinished();
-    }
+    for (int i = 0; i < kThreadCount; ++i)
+        statuses.append(QtConcurrent::run(function));
 
     bool ok = true;
-    for(int i = 0; i < threadCount; ++i)
+    for (int i = 0; i < kThreadCount; ++i)
     {
+        statuses[i].waitForFinished();
         if (!statuses[i].result())
         {
-            qDebug() << "result of " << i << " operation is false";
+            qDebug() << "request" << i << "failed";
             ok = false;
         }
     }
-    QCOMPARE(ok, true);
+    QVERIFY(ok);
 }
 
 void RestClientTest::cleanupTestCase()
