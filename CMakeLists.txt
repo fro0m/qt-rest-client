@@ -13,6 +13,14 @@ add_library(qt-rest-client STATIC
     HttpRequestWorker.h
 )
 
+# Be loud about problems in our own code. Third-party Qt headers can be noisy,
+# so the warnings apply to this target only (not to consumers that link us).
+if(MSVC)
+    target_compile_options(qt-rest-client PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(qt-rest-client PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 target_link_libraries(qt-rest-client
     PUBLIC
         Qt6::Core
