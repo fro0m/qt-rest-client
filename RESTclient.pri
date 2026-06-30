@@ -1,6 +1,8 @@
 
 QT *= network
 
+INCLUDEPATH += $$PWD
+
 HEADERS += \
         $$PWD/HttpRequestWorker.h \
 

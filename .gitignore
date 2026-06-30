@@ -1,1 +1,41 @@
+# Qt Creator / user-specific
 *.pro.user
+*.pro.user.*
+*.moc.depends
+*.moc
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+
+# Build output
+build/
+build-*/
+out/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+compile_commands.json
+
+# Compiled artifacts
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
